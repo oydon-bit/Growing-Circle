@@ -1,87 +1,282 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Growing Rainbow Circle</title>
-  <style>
-    /* Full-screen centered stage */
-    html,body{
-      height:100%;
-      margin:0;
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      background:#0b0b0f;
-      font-family:system-ui,Segoe UI,Roboto,"Helvetica Neue",Arial;
-    }
-
-    /* A viewport that hides overflow so the circle can "grow out" */
-    .stage{
-      position:relative;
-      width:80vmin;
-      height:80vmin;
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      overflow:hidden;
-    }
-
-    /* The rainbow circle */
-    .rainbow{
-      width:20vmin;
-      height:20vmin;
-      border-radius:50%;
-      /* conic-gradient gives a smooth rainbow */
-      background: conic-gradient(from 0deg,
-        #ff004d 0%,
-        #ff7a00 15%,
-        #ffef00 30%,
-        #3bff00 45%,
-        #00f2ff 60%,
-        #004dff 75%,
-        #b300ff 90%,
-        #ff004d 100%);
-      /* subtle inner glow */
-      box-shadow: 0 0 30px rgba(255,255,255,0.04), inset 0 0 18px rgba(0,0,0,0.15);
-      transform-origin:center;
-      /* continuous growth + hue rotation for lively effect */
-      animation: grow 3.2s linear infinite, spinHue 6s linear infinite;
-    }
-
-    /* Grow from small to larger, then snap back and repeat */
-    @keyframes grow {
-      0%   { transform: scale(1); opacity:1; }
-      90%  { transform: scale(6); opacity:0.95; }
-      100% { transform: scale(0.98); opacity:0.0; } /* quick reset to create a looping 'growing' feel */
-    }
-
-    /* Slowly shift the hue for motion in the rainbow */
-    @keyframes spinHue {
-      0%   { filter: hue-rotate(0deg); }
-      100% { filter: hue-rotate(360deg); }
-    }
-
-    /* small caption */
-    .caption{
-      position:absolute;
-      bottom:8px;
-      left:12px;
-      color:#ddd;
-      font-size:0.9rem;
-      opacity:0.7;
-    }
-
-    /* Make sure it looks good on very small screens */
-    @media (max-width:420px){
-      .rainbow{ animation-duration:2.8s,5s; }
-    }
-  </style>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Rainbow Bubble Pop</title>
+<style>
+  :root{ --bg:#07070a; }
+  html,body{ height:100%; margin:0; background:var(--bg); font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;}
+  .wrap{
+    height:100%;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    overflow:hidden;
+  }
+  canvas{ display:block; width:100vmin; height:100vmin; max-width:96vw; max-height:96vh; border-radius:18px; box-shadow: 0 8px 40px rgba(0,0,0,0.6); background:linear-gradient(180deg, rgba(255,255,255,0.02), transparent);}
+  .hint{
+    position:fixed; bottom:18px; left:18px; color:#ddd; opacity:.7; font-size:13px;
+  }
+</style>
 </head>
 <body>
-  <div class="stage" aria-hidden="true">
-    <div class="rainbow" title="Growing rainbow circle"></div>
-    <div class="caption">Growing Rainbow • GitHub Pages demo</div>
+  <div class="wrap">
+    <canvas id="c"></canvas>
   </div>
+  <div class="hint">Click or press space to pop faster — GitHub Pages demo</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d', { alpha: true });
+
+  // size canvas to CSS pixels but keep high DPI
+  function resize() {
+    const rect = canvas.getBoundingClientRect();
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.round(rect.width * dpr);
+    canvas.height = Math.round(rect.height * dpr);
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // Bubble parameters
+  const stage = {
+    w: canvas.width / (window.devicePixelRatio || 1),
+    h: canvas.height / (window.devicePixelRatio || 1)
+  };
+
+  let last = performance.now();
+
+  // bubble state
+  const bubble = {
+    x: stage.w/2,
+    y: stage.h/2,
+    baseRadius: Math.min(stage.w, stage.h) * 0.08, // starting small
+    maxRadius: Math.min(stage.w, stage.h) * 0.45, // grows to this
+    radius: 0,
+    growDuration: 1500, // ms to grow before pop
+    elapsed: 0,
+    popping: false
+  };
+
+  // Particles produced on pop
+  const particles = [];
+
+  function hsvToRgb(h, s, v) {
+    // h in [0,360], s,v in [0,1]
+    let c = v * s;
+    let x = c * (1 - Math.abs(((h/60) % 2) - 1));
+    let m = v - c;
+    let r=0,g=0,b=0;
+    if (0<=h && h<60){ r=c; g=x; b=0; }
+    else if (60<=h && h<120){ r=x; g=c; b=0; }
+    else if (120<=h && h<180){ r=0; g=c; b=x; }
+    else if (180<=h && h<240){ r=0; g=x; b=c; }
+    else if (240<=h && h<300){ r=x; g=0; b=c; }
+    else { r=c; g=0; b=x; }
+    return `rgb(${Math.round((r+m)*255)},${Math.round((g+m)*255)},${Math.round((b+m)*255)})`;
+  }
+
+  function makeParticles(cx, cy, count, sourceRadius) {
+    for (let i=0;i<count;i++){
+      const angle = Math.random() * Math.PI * 2;
+      // speed correlated with source radius and a randomness factor
+      const speed = (Math.random()*0.9 + 0.6) * (sourceRadius * 0.6) / 100;
+      const life = 700 + Math.random()*800; // ms
+      const size = Math.max(2, (Math.random()*8));
+      // choose color by angle -> rainbow mapping
+      const hue = (angle / (Math.PI*2)) * 360 + (Math.random()*20 -10);
+      particles.push({
+        x: cx,
+        y: cy,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed - (Math.random()*0.02), // slight upward bias
+        size,
+        life,
+        born: performance.now(),
+        hue,
+        alpha: 1,
+        friction: 0.995 + Math.random()*0.002
+      });
+    }
+  }
+
+  function drawBubble(x,y,r) {
+    // draw a soft glowing rainbow ring (bubble-like)
+    const grd = ctx.createRadialGradient(x, y, Math.max(1, r*0.2), x, y, r);
+    // subtle inner bright
+    grd.addColorStop(0, 'rgba(255,255,255,0.85)');
+    // colored ring using conic-ish illusion: sample several stops with rainbow hues
+    for (let i=0;i<=8;i++){
+      const t = i/8;
+      const hue = (t*360 + (performance.now()/40)%360)|0;
+      const alpha = 0.6 - (Math.abs(t-0.5)*1.1);
+      grd.addColorStop(0.6 + t*0.4, `hsla(${hue},100%,60%,${Math.max(0,alpha)})`);
+    }
+    ctx.save();
+    ctx.beginPath();
+    ctx.fillStyle = grd;
+    ctx.arc(x,y,r,0,Math.PI*2);
+    ctx.fill();
+
+    // outer glossy rim to look like a bubble (thin)
+    ctx.lineWidth = Math.max(2, r*0.035);
+    ctx.strokeStyle = `rgba(255,255,255,0.55)`;
+    ctx.beginPath();
+    ctx.arc(x,y,r - ctx.lineWidth*0.4, 0, Math.PI*2);
+    ctx.stroke();
+
+    // small inner highlight
+    ctx.fillStyle = 'rgba(255,255,255,0.12)';
+    ctx.beginPath();
+    ctx.ellipse(x - r*0.28, y - r*0.28, r*0.22, r*0.14, Math.PI/6, 0, Math.PI*2);
+    ctx.fill();
+
+    ctx.restore();
+  }
+
+  function update(dt) {
+    // update stage size in case of resize
+    stage.w = canvas.width / (window.devicePixelRatio || 1);
+    stage.h = canvas.height / (window.devicePixelRatio || 1);
+    bubble.x = stage.w/2;
+    bubble.y = stage.h/2;
+    // handle bubble growth
+    if (!bubble.popping) {
+      bubble.elapsed += dt;
+      const t = Math.min(1, bubble.elapsed / bubble.growDuration);
+      // ease-out growth for snappy pop
+      const ease = 1 - Math.pow(1 - t, 2.2);
+      bubble.radius = bubble.baseRadius + (bubble.maxRadius - bubble.baseRadius) * ease;
+      // gentle pulse to feel alive
+      bubble.radius *= 1 + 0.03 * Math.sin(performance.now()/220);
+      if (t >= 0.98) {
+        // trigger pop
+        bubble.popping = true;
+        // create burst count proportional to size
+        const count = 26 + Math.floor((bubble.radius / bubble.maxRadius) * 80);
+        makeParticles(bubble.x, bubble.y, count, bubble.radius);
+        // schedule reset after particles have begun
+        setTimeout(()=> {
+          bubble.popping = false;
+          bubble.elapsed = 0;
+          bubble.radius = bubble.baseRadius * 0.9;
+        }, 280); // short delay so we see the burst
+      }
+    }
+
+    // update particles
+    const now = performance.now();
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      const age = now - p.born;
+      if (age >= p.life || p.alpha <= 0.02 || p.size < 0.2) {
+        particles.splice(i,1);
+        continue;
+      }
+      // basic physics
+      p.vx *= p.friction;
+      p.vy *= p.friction;
+      // gravity + drag (very subtle)
+      p.vy += 0.0014 * (1 + Math.random()*0.6);
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      // fade out towards end of life
+      const progress = age / p.life;
+      p.alpha = 1 - smoothstep(0.6, 1.0, progress);
+      p.size *= 0.9995;
+    }
+  }
+
+  function smoothstep(a,b,x){
+    const t = Math.min(1, Math.max(0, (x - a)/(b-a)));
+    return t*t*(3 - 2*t);
+  }
+
+  function render() {
+    // clear with slight alpha to create trailing glow
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+
+    // scale for crisp drawing on different CSS sizes (we already set transform for DPR)
+    // center coordinates in CSS pixels
+    ctx.save();
+    // draw bubble (if not popped)
+    if (!bubble.popping) {
+      drawBubble(bubble.x, bubble.y, bubble.radius);
+    } else {
+      // during pop we can still draw a smaller ghost to indicate burst origin
+      drawBubble(bubble.x, bubble.y, Math.max(2, bubble.radius * 0.45));
+    }
+
+    // draw particles
+    for (const p of particles) {
+      ctx.save();
+      ctx.globalAlpha = p.alpha;
+      // give each particle a soft radial fill
+      const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, Math.max(6, p.size*6));
+      g.addColorStop(0, hsvToRgb((p.hue + (performance.now()/30)%360)%360, 1, 1));
+      g.addColorStop(0.5, `hsla(${p.hue},100%,55%,0.85)`);
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, Math.max(1, p.size), 0, Math.PI*2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    ctx.restore();
+  }
+
+  // main loop
+  function loop(now) {
+    const dt = Math.min(40, now - last);
+    last = now;
+    update(dt);
+    render();
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+
+  // interactive controls
+  function popNow() {
+    if (!bubble.popping) {
+      bubble.popping = true;
+      const count = 30 + Math.floor((bubble.radius / bubble.maxRadius) * 90);
+      makeParticles(bubble.x, bubble.y, count, bubble.radius);
+      setTimeout(()=> {
+        bubble.popping = false;
+        bubble.elapsed = 0;
+        bubble.radius = bubble.baseRadius * 0.9;
+      }, 260);
+    } else {
+      // if already popping, add a quick mini-burst for richness
+      makeParticles(bubble.x + (Math.random()-0.5)*30, bubble.y + (Math.random()-0.5)*30, 18, bubble.radius*0.5);
+    }
+  }
+
+  // click or space to pop
+  canvas.addEventListener('click', popNow);
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') { e.preventDefault(); popNow(); }
+  });
+
+  // on load, make sure sizes match
+  function reflow() {
+    resize();
+    stage.w = canvas.width / (window.devicePixelRatio || 1);
+    stage.h = canvas.height / (window.devicePixelRatio || 1);
+    bubble.x = stage.w/2;
+    bubble.y = stage.h/2;
+    // adjust radii based on new size
+    bubble.baseRadius = Math.min(stage.w, stage.h) * 0.08;
+    bubble.maxRadius = Math.min(stage.w, stage.h) * 0.45;
+  }
+  window.addEventListener('load', reflow);
+  window.addEventListener('resize', reflow);
+})();
+</script>
 </body>
 </html>
